@@ -98,9 +98,13 @@ void CUnicodeFinder::init() {
 }
 
 std::vector<SFinderResult> CUnicodeFinder::getResultsForQuery(const std::string& query) {
-    std::vector<SFinderResult> results;
+    std::vector<SFinderResult>     results;
 
-    auto                       fuzzed = Fuzzy::getNResults(m_unicodeEntryCacheGeneric, query, MAX_RESULTS_PER_FINDER);
+    std::vector<SP<IFinderResult>> fuzzed;
+    if (!query.empty())
+        fuzzed = Fuzzy::getNResults(m_unicodeEntryCacheGeneric, query, MAX_RESULTS_PER_FINDER);
+    else
+        fuzzed = std::vector<SP<IFinderResult>>{m_unicodeEntryCacheGeneric.begin(), m_unicodeEntryCacheGeneric.begin() + std::min(m_unicodeEntryCacheGeneric.size(), MAX_RESULTS_PER_FINDER)};
 
     results.reserve(fuzzed.size());
 
