@@ -17,18 +17,43 @@ using namespace Hyprutils::String;
 constexpr const size_t MAX_RESULTS_IN_LAUNCHER = 50;
 
 CUI::CUI(bool open) : m_openByDefault(open) {
-    static auto PGRABFOCUS  = Hyprlang::CSimpleConfigValue<Hyprlang::INT>(g_configManager->m_config.get(), "general:grab_focus");
-    static auto PWINDOWSIZE = Hyprlang::CSimpleConfigValue<Hyprlang::VEC2>(g_configManager->m_config.get(), "ui:window_size");
+    static auto PGRABFOCUS          = Hyprlang::CSimpleConfigValue<Hyprlang::INT>(g_configManager->m_config.get(), "general:grab_focus");
+    static auto PCLICKOUTSIDECLOSE  = Hyprlang::CSimpleConfigValue<Hyprlang::INT>(g_configManager->m_config.get(), "general:close_on_click_outside");
+    static auto PWINDOWSIZE         = Hyprlang::CSimpleConfigValue<Hyprlang::VEC2>(g_configManager->m_config.get(), "ui:window_size");
 
     m_backend = Hyprtoolkit::IBackend::create();
+
+    const bool clickOutsideClose = *PCLICKOUTSIDECLOSE;
+
+    if (clickOutsideClose) {
+        // Full-screen transparent overlay that catches clicks outside the launcher
+        m_overlay = Hyprtoolkit::CRectangleBuilder::begin()
+                        ->color([] { return Hyprtoolkit::CHyprColor(0, 0, 0, 0); })
+                        ->size({Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, {1, 1}})
+                        ->commence();
+
+        m_overlay->setReceivesMouse(true);
+        m_overlay->setMouseButton([this](Hyprtoolkit::Input::eMouseButton btn, bool down) {
+            if (btn == Hyprtoolkit::Input::MOUSE_BUTTON_LEFT && down)
+                setWindowOpen(false);
+        });
+    }
 
     m_background = Hyprtoolkit::CRectangleBuilder::begin()
                        ->color([this] { return m_backend->getPalette()->m_colors.background; })
                        ->rounding(m_backend->getPalette()->m_vars.bigRounding)
                        ->borderColor([this] { return m_backend->getPalette()->m_colors.accent.darken(0.2F); })
                        ->borderThickness(1)
-                       ->size({Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, {1, 1}})
+                       ->size(clickOutsideClose
+                                  ? Hyprtoolkit::CDynamicSize{Hyprtoolkit::CDynamicSize::HT_SIZE_ABSOLUTE, Hyprtoolkit::CDynamicSize::HT_SIZE_ABSOLUTE,
+                                                             {(*PWINDOWSIZE).x, (*PWINDOWSIZE).y}}
+                                  : Hyprtoolkit::CDynamicSize{Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, {1, 1}})
                        ->commence();
+
+    if (clickOutsideClose) {
+        m_background->setPositionMode(Hyprtoolkit::IElement::HT_POSITION_ABSOLUTE);
+        m_background->setPositionFlag(Hyprtoolkit::IElement::HT_POSITION_FLAG_CENTER, true);
+    }
 
     m_layout =
         Hyprtoolkit::CColumnLayoutBuilder::begin()->size({Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, {1, 1}})->gap(4)->commence();
@@ -66,17 +91,33 @@ CUI::CUI(bool open) : m_openByDefault(open) {
     m_scrollArea->addChild(m_resultsLayout);
 
     //
-    m_window = Hyprtoolkit::CWindowBuilder::begin()
-                   ->appClass("hyprlauncher")
-                   ->type(Hyprtoolkit::HT_WINDOW_LAYER)
-                   ->preferredSize({(*PWINDOWSIZE).x, (*PWINDOWSIZE).y})
-                   ->anchor(1 | 2 | 4 | 8)
-                   ->exclusiveZone(-1)
-                   ->layer(3)
-                   ->kbInteractive(*PGRABFOCUS ? 1 : 2)
-                   ->commence();
+    if (clickOutsideClose) {
+        m_overlay->addChild(m_background);
 
-    m_window->m_rootElement->addChild(m_background);
+        m_window = Hyprtoolkit::CWindowBuilder::begin()
+                       ->appClass("hyprlauncher")
+                       ->type(Hyprtoolkit::HT_WINDOW_LAYER)
+                       ->preferredSize({0, 0})
+                       ->anchor(1 | 2 | 4 | 8)
+                       ->exclusiveZone(-1)
+                       ->layer(3)
+                       ->kbInteractive(*PGRABFOCUS ? 1 : 2)
+                       ->commence();
+
+        m_window->m_rootElement->addChild(m_overlay);
+    } else {
+        m_window = Hyprtoolkit::CWindowBuilder::begin()
+                       ->appClass("hyprlauncher")
+                       ->type(Hyprtoolkit::HT_WINDOW_LAYER)
+                       ->preferredSize({(*PWINDOWSIZE).x, (*PWINDOWSIZE).y})
+                       ->anchor(1 | 2 | 4 | 8)
+                       ->exclusiveZone(-1)
+                       ->layer(3)
+                       ->kbInteractive(*PGRABFOCUS ? 1 : 2)
+                       ->commence();
+
+        m_window->m_rootElement->addChild(m_background);
+    }
 
     m_window->m_events.keyboardKey.listenStatic([this](Hyprtoolkit::Input::SKeyboardKeyEvent e) {
         if (e.xkbKeysym == XKB_KEY_Escape)

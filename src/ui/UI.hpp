@@ -37,6 +37,7 @@ class CUI {
 
     SP<Hyprtoolkit::IBackend>             m_backend;
     SP<Hyprtoolkit::IWindow>              m_window;
+    SP<Hyprtoolkit::CRectangleElement>    m_overlay;
     SP<Hyprtoolkit::CRectangleElement>    m_background;
     SP<Hyprtoolkit::CColumnLayoutElement> m_layout;
 
