@@ -13,8 +13,11 @@
 
 #include <hyprtoolkit/system/Icons.hpp>
 
+#include <optional>
+
 #include "../helpers/Memory.hpp"
 #include "../finders/IFinder.hpp"
+#include "../finders/desktop/DesktopFinder.hpp"
 
 class CResultButton;
 
@@ -51,6 +54,18 @@ class CUI {
     bool                                  m_open            = false;
     bool                                  m_openByDefault   = true;
     size_t                                m_activeElementId = 0;
+
+    // Submenu state
+    std::optional<size_t>                 m_expandedParentIdx;       // index in m_currentResults of expanded parent
+    std::vector<SDesktopAction>           m_submenuActions;          // currently visible submenu items (max 10)
+    size_t                                m_submenuInsertOffset = 0; // number of submenu items inserted in visible list
+    std::string                           m_lastQuery;              // current query for auto-select matching
+
+    // Submenu operations
+    void                                  expandSubmenu(size_t parentIdx);
+    void                                  collapseSubmenu();
+    bool                                  isSubmenuItemIdx(size_t visibleIdx) const;
+    size_t                                submenuActionIndex(size_t visibleIdx) const;
 
     friend class CQueryProcessor;
     friend class CResultButton;

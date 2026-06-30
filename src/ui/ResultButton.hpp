@@ -32,10 +32,23 @@ class CResultButton {
     void                               setActive(bool active);
     void                               setLabel(const std::string& x, const std::string& icon, std::optional<std::string> font, bool canHaveIcon);
 
+    // Submenu-related rendering
+    void setSubmenuIndicator(bool show);
+    void setIndented(bool indented);
+    void setSubmenuStyle(bool isSubmenuItem);
+
   private:
     void        updatedFontSize();
 
     bool        m_active       = false;
     int         m_lastFontSize = 0.F;
     std::string m_lastLabel = "", m_lastIcon = "";
+
+    // Submenu state
+    bool m_hasSubmenuIndicator = false;
+    bool m_indented            = false;
+    bool m_isSubmenuItem       = false;
+
+    // Chevron/indicator element
+    SP<Hyprtoolkit::CTextElement> m_submenuChevron;
 };

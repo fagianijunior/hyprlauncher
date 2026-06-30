@@ -32,64 +32,148 @@ static std::optional<std::string> readFileAsString(const std::filesystem::path& 
     return trim(std::string((std::istreambuf_iterator<char>(file)), (std::istreambuf_iterator<char>())));
 }
 
-class CDesktopEntry : public IFinderResult {
-  public:
-    CDesktopEntry()          = default;
-    virtual ~CDesktopEntry() = default;
+void CDesktopEntry::run() {
+    static auto            PLAUNCHPREFIX = Hyprlang::CSimpleConfigValue<Hyprlang::STRING>(g_configManager->m_config.get(), "finders:desktop_launch_prefix");
+    static auto            PTERMINALEXEC = Hyprlang::CSimpleConfigValue<Hyprlang::STRING>(g_configManager->m_config.get(), "finders:desktop_terminal");
+    const std::string_view LAUNCH_PREFIX = *PLAUNCHPREFIX;
+    const std::string_view TERMINAL_EXEC = *PTERMINALEXEC;
 
-    virtual const std::vector<std::string>& fuzzables() {
-        return m_fuzzables;
+    auto                   toExec = std::format("{}{}{}", LAUNCH_PREFIX.empty() ? std::string{""} : std::string{LAUNCH_PREFIX} + std::string{" "},
+                                                m_terminal && !TERMINAL_EXEC.empty() ? std::string{TERMINAL_EXEC} + std::string{" "} : std::string{""}, m_exec);
+
+    Debug::log(TRACE, "Running {}", toExec);
+
+    g_desktopFinder->m_entryFrequencyCache->incrementCachedEntry(m_name);
+    m_frequency = g_desktopFinder->m_entryFrequencyCache->getCachedEntry(m_name);
+
+    // replace all funky codes with nothing
+    replaceInString(toExec, "%U", "");
+    replaceInString(toExec, "%f", "");
+    replaceInString(toExec, "%F", "");
+    replaceInString(toExec, "%u", "");
+    replaceInString(toExec, "%i", "");
+    replaceInString(toExec, "%c", "");
+    replaceInString(toExec, "%k", "");
+    replaceInString(toExec, "%d", "");
+    replaceInString(toExec, "%D", "");
+    replaceInString(toExec, "%N", "");
+    replaceInString(toExec, "%n", "");
+
+    CProcess proc("/bin/sh", {"-c", toExec});
+    proc.runAsync();
+}
+
+static std::vector<std::string> parseActionIdentifiers(const std::string_view actionsValue) {
+    std::vector<std::string>    result;
+    std::unordered_set<std::string> seen;
+
+    size_t start = 0;
+    while (start <= actionsValue.size()) {
+        size_t end = actionsValue.find(';', start);
+        if (end == std::string_view::npos)
+            end = actionsValue.size();
+
+        std::string segment(actionsValue.substr(start, end - start));
+        segment = trim(segment);
+
+        if (!segment.empty() && seen.insert(segment).second)
+            result.emplace_back(std::move(segment));
+
+        start = end + 1;
     }
 
-    virtual eFinderTypes type() {
-        return FINDER_DESKTOP;
+    return result;
+}
+
+static std::optional<SDesktopAction> parseActionSection(const std::string& content, const std::string& identifier) {
+    // Locate the section header: [Desktop Action <identifier>]
+    const std::string sectionHeader = "[Desktop Action " + identifier + "]";
+    size_t            sectionStart  = content.find(sectionHeader);
+
+    if (sectionStart == std::string::npos) {
+        Debug::log(TRACE, "desktop: action section not found for identifier \"{}\"", identifier);
+        return std::nullopt;
     }
 
-    virtual uint32_t frequency() {
-        return m_frequency;
+    // Move past the header line
+    size_t sectionBodyStart = content.find('\n', sectionStart);
+    if (sectionBodyStart == std::string::npos)
+        return std::nullopt; // Header is at end of file with no body
+    sectionBodyStart += 1; // skip the newline
+
+    // Find the end of the section: next '[' at the start of a line, or EOF
+    size_t sectionEnd = std::string::npos;
+    size_t searchPos  = sectionBodyStart;
+    while (searchPos < content.size()) {
+        size_t lineStart = searchPos;
+        if (content[lineStart] == '[') {
+            sectionEnd = lineStart;
+            break;
+        }
+        // Advance to next line
+        size_t nextNewline = content.find('\n', searchPos);
+        if (nextNewline == std::string::npos)
+            break;
+        searchPos = nextNewline + 1;
     }
 
-    virtual const std::string& name() {
-        return m_name;
+    // Extract the section body
+    std::string_view sectionBody;
+    if (sectionEnd != std::string::npos)
+        sectionBody = std::string_view(content).substr(sectionBodyStart, sectionEnd - sectionBodyStart);
+    else
+        sectionBody = std::string_view(content).substr(sectionBodyStart);
+
+    // Helper to extract a field value from within the section body
+    auto extractField = [&sectionBody](const std::string_view key) -> std::string {
+        // Look for key at start of a line: "\nKey=" or at the very start of section body
+        std::string searchKey = std::string(key) + "=";
+        size_t      pos       = std::string_view::npos;
+
+        // Check if section body starts with the key
+        if (sectionBody.starts_with(searchKey)) {
+            pos = 0;
+        } else {
+            std::string nlKey = "\n" + searchKey;
+            size_t      found = sectionBody.find(nlKey);
+            if (found != std::string_view::npos)
+                pos = found + 1; // skip the \n
+        }
+
+        if (pos == std::string_view::npos)
+            return "";
+
+        // Find the '=' and extract value
+        size_t eqPos = sectionBody.find('=', pos);
+        if (eqPos == std::string_view::npos)
+            return "";
+
+        size_t valueStart = eqPos + 1;
+
+        // Find end of line
+        size_t valueEnd = sectionBody.find('\n', valueStart);
+        if (valueEnd == std::string_view::npos)
+            valueEnd = sectionBody.size();
+
+        std::string value(sectionBody.substr(valueStart, valueEnd - valueStart));
+        // Trim whitespace
+        value.erase(0, value.find_first_not_of(" \t\r"));
+        value.erase(value.find_last_not_of(" \t\r") + 1);
+        return value;
+    };
+
+    std::string actionName = extractField("Name");
+    std::string actionExec = extractField("Exec");
+    std::string actionIcon = extractField("Icon");
+
+    // Skip if Name or Exec is missing or empty after trimming
+    if (actionName.empty() || actionExec.empty()) {
+        Debug::log(TRACE, "desktop: skipping action \"{}\" - missing Name or Exec", identifier);
+        return std::nullopt;
     }
 
-    virtual void run() {
-        static auto            PLAUNCHPREFIX = Hyprlang::CSimpleConfigValue<Hyprlang::STRING>(g_configManager->m_config.get(), "finders:desktop_launch_prefix");
-        static auto            PTERMINALEXEC = Hyprlang::CSimpleConfigValue<Hyprlang::STRING>(g_configManager->m_config.get(), "finders:desktop_terminal");
-        const std::string_view LAUNCH_PREFIX = *PLAUNCHPREFIX;
-        const std::string_view TERMINAL_EXEC = *PTERMINALEXEC;
-
-        auto                   toExec = std::format("{}{}{}", LAUNCH_PREFIX.empty() ? std::string{""} : std::string{LAUNCH_PREFIX} + std::string{" "},
-                                                    m_terminal && !TERMINAL_EXEC.empty() ? std::string{TERMINAL_EXEC} + std::string{" "} : std::string{""}, m_exec);
-
-        Debug::log(TRACE, "Running {}", toExec);
-
-        g_desktopFinder->m_entryFrequencyCache->incrementCachedEntry(m_name);
-        m_frequency = g_desktopFinder->m_entryFrequencyCache->getCachedEntry(m_name);
-
-        // replace all funky codes with nothing
-        replaceInString(toExec, "%U", "");
-        replaceInString(toExec, "%f", "");
-        replaceInString(toExec, "%F", "");
-        replaceInString(toExec, "%u", "");
-        replaceInString(toExec, "%i", "");
-        replaceInString(toExec, "%c", "");
-        replaceInString(toExec, "%k", "");
-        replaceInString(toExec, "%d", "");
-        replaceInString(toExec, "%D", "");
-        replaceInString(toExec, "%N", "");
-        replaceInString(toExec, "%n", "");
-
-        CProcess proc("/bin/sh", {"-c", toExec});
-        proc.runAsync();
-    }
-
-    std::string              m_name, m_exec, m_icon, m_stem;
-    std::vector<std::string> m_fuzzables;
-    bool                     m_terminal = false;
-
-    uint32_t                 m_frequency = 0;
-};
+    return SDesktopAction{.name = std::move(actionName), .exec = std::move(actionExec), .icon = std::move(actionIcon)};
+}
 
 static std::filesystem::path resolvePath(const std::string& p) {
     if (p[0] != '~')
@@ -265,33 +349,101 @@ void CDesktopFinder::cacheEntry(const std::filesystem::path& path) {
     e->m_exec      = EXEC;
     e->m_icon      = ICON;
     e->m_name      = NAME;
-    e->m_fuzzables = Fuzzy::createFuzzableStrings({NAME, GEN_NAME});
     e->m_stem      = std::move(pathStem);
     e->m_terminal  = TERMINAL;
     e->m_frequency = m_entryFrequencyCache->getCachedEntry(e->m_name);
-    m_desktopEntryCacheGeneric.emplace_back(e);
 
     Debug::log(TRACE, "desktop: cached {} with icon {} and exec line of \"{}\"", NAME, ICON, EXEC);
+
+    // Parse Actions= key for desktop action support
+    const auto ACTIONS = extract("Actions");
+    if (!ACTIONS.empty()) {
+        auto actionIdentifiers = parseActionIdentifiers(ACTIONS);
+        Debug::log(TRACE, "desktop: found {} action identifiers for {}", actionIdentifiers.size(), NAME);
+
+        for (const auto& id : actionIdentifiers) {
+            auto action = parseActionSection(DATA, id);
+            if (action) {
+                Debug::log(TRACE, "desktop: parsed action \"{}\" for {}", action->name, NAME);
+                e->m_actions.emplace_back(std::move(*action));
+            }
+        }
+    }
+
+    // Build fuzzables: Name, GenericName, plus all action names
+    // Fuzzy::createFuzzableStrings takes an initializer_list which can't be built dynamically,
+    // so we build the vector manually with the same lowercase transformation.
+    {
+        std::vector<std::string> fuzzables;
+        fuzzables.reserve(2 + e->m_actions.size());
+
+        auto toLower = [](std::string_view sv) -> std::string {
+            std::string result;
+            result.resize(sv.size());
+            std::ranges::transform(sv, result.begin(), ::tolower);
+            return result;
+        };
+
+        fuzzables.emplace_back(toLower(NAME));
+        fuzzables.emplace_back(toLower(GEN_NAME));
+
+        for (const auto& action : e->m_actions) {
+            fuzzables.emplace_back(toLower(action.name));
+        }
+
+        e->m_fuzzables = std::move(fuzzables);
+    }
+
+    m_desktopEntryCacheGeneric.emplace_back(e);
+}
+
+void executeDesktopAction(const SDesktopAction& action, bool parentTerminal) {
+    static auto            PLAUNCHPREFIX = Hyprlang::CSimpleConfigValue<Hyprlang::STRING>(g_configManager->m_config.get(), "finders:desktop_launch_prefix");
+    static auto            PTERMINALEXEC = Hyprlang::CSimpleConfigValue<Hyprlang::STRING>(g_configManager->m_config.get(), "finders:desktop_terminal");
+    const std::string_view LAUNCH_PREFIX = *PLAUNCHPREFIX;
+    const std::string_view TERMINAL_EXEC = *PTERMINALEXEC;
+
+    auto                   toExec = std::format("{}{}{}", LAUNCH_PREFIX.empty() ? std::string{""} : std::string{LAUNCH_PREFIX} + std::string{" "},
+                                                parentTerminal && !TERMINAL_EXEC.empty() ? std::string{TERMINAL_EXEC} + std::string{" "} : std::string{""}, action.exec);
+
+    // replace all funky codes with nothing
+    replaceInString(toExec, "%U", "");
+    replaceInString(toExec, "%u", "");
+    replaceInString(toExec, "%f", "");
+    replaceInString(toExec, "%F", "");
+    replaceInString(toExec, "%i", "");
+    replaceInString(toExec, "%c", "");
+    replaceInString(toExec, "%k", "");
+    replaceInString(toExec, "%d", "");
+    replaceInString(toExec, "%D", "");
+    replaceInString(toExec, "%N", "");
+    replaceInString(toExec, "%n", "");
+
+    Debug::log(TRACE, "Running desktop action: {}", toExec);
+
+    CProcess proc("/bin/sh", {"-c", toExec});
+    proc.runAsync();
 }
 
 std::vector<SFinderResult> CDesktopFinder::getResultsForQuery(const std::string& query) {
     static auto                PICONSENABLED = Hyprlang::CSimpleConfigValue<Hyprlang::INT>(g_configManager->m_config.get(), "finders:desktop_icons");
 
-    std::vector<SFinderResult> results;
-
     auto                       fuzzed = Fuzzy::getNResults(m_desktopEntryCacheGeneric, query, MAX_RESULTS_PER_FINDER);
 
+    // Build final results
+    std::vector<SFinderResult> results;
     results.reserve(fuzzed.size());
 
-    for (const auto& f : fuzzed) {
-        const auto p = reinterpretPointerCast<CDesktopEntry>(f);
+    for (const auto& r : fuzzed) {
+        const auto p = reinterpretPointerCast<CDesktopEntry>(r);
         if (!p)
             continue;
         results.emplace_back(SFinderResult{
-            .label   = p->m_name,
-            .icon    = *PICONSENABLED ? p->m_icon : "",
-            .result  = p,
-            .hasIcon = true,
+            .label      = p->m_name,
+            .icon       = *PICONSENABLED ? p->m_icon : "",
+            .result     = p,
+            .hasIcon    = true,
+            .hasSubmenu = p->hasActions(),
         });
     }
 

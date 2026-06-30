@@ -44,6 +44,17 @@ CResultButton::CResultButton() {
     m_label->setPositionFlag(Hyprtoolkit::IElement::HT_POSITION_FLAG_LEFT, true);
     m_label->setPositionFlag(Hyprtoolkit::IElement::HT_POSITION_FLAG_VCENTER, true);
 
+    // Create chevron indicator for submenu (initially not added to tree)
+    m_submenuChevron = Hyprtoolkit::CTextBuilder::begin()
+                           ->text(std::string{"›"})
+                           ->a(0.5F)
+                           ->align(Hyprtoolkit::HT_FONT_ALIGN_RIGHT)
+                           ->size({Hyprtoolkit::CDynamicSize::HT_SIZE_ABSOLUTE, Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, {20.F, 1.F}})
+                           ->commence();
+    m_submenuChevron->setPositionMode(Hyprtoolkit::IElement::HT_POSITION_ABSOLUTE);
+    m_submenuChevron->setPositionFlag(Hyprtoolkit::IElement::HT_POSITION_FLAG_RIGHT, true);
+    m_submenuChevron->setPositionFlag(Hyprtoolkit::IElement::HT_POSITION_FLAG_VCENTER, true);
+
     m_background->addChild(m_container);
     m_container->addChild(m_label);
 }
@@ -106,4 +117,44 @@ void CResultButton::updatedFontSize() {
     m_background->rebuild()->size({Hyprtoolkit::CDynamicSize::HT_SIZE_PERCENT, Hyprtoolkit::CDynamicSize::HT_SIZE_ABSOLUTE, {1.F, (FONT_SIZE * 2.F) + 4.F}})->commence();
 
     m_lastFontSize = FONT_SIZE;
+}
+
+void CResultButton::setSubmenuIndicator(bool show) {
+    if (show == m_hasSubmenuIndicator)
+        return;
+    m_hasSubmenuIndicator = show;
+    if (show) {
+        m_background->addChild(m_submenuChevron);
+    } else {
+        m_background->removeChild(m_submenuChevron);
+    }
+}
+
+void CResultButton::setIndented(bool indented) {
+    if (indented == m_indented)
+        return;
+    m_indented = indented;
+    // Apply larger uniform margin to visually indent submenu items.
+    // Since setMargin applies to all sides, the increased value creates
+    // a visible left offset within the row layout.
+    m_container->setMargin(indented ? 20 : 4);
+}
+
+void CResultButton::setSubmenuStyle(bool isSubmenuItem) {
+    if (isSubmenuItem == m_isSubmenuItem)
+        return;
+    m_isSubmenuItem = isSubmenuItem;
+    // Apply reduced opacity to the label text for submenu items
+    if (m_label) {
+        m_label->rebuild()
+            ->color([this]() -> Hyprtoolkit::CHyprColor {
+                auto c = g_ui->m_backend->getPalette()->m_colors.text;
+                if (m_isSubmenuItem)
+                    c.a = 0.7; // slightly dimmer for submenu items
+                return c;
+            })
+            ->text(std::string{m_lastLabel})
+            ->fontFamily(std::string{g_ui->m_backend->getPalette()->m_vars.fontFamily})
+            ->commence();
+    }
 }
